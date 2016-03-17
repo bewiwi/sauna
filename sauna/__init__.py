@@ -7,8 +7,12 @@ import socket
 import os
 import textwrap
 import signal
+import importlib
+import pkgutil
+
 
 from sauna import plugins, consumers
+from sauna.plugins.base import Check
 
 __version__ = '0.0.3'
 
@@ -81,7 +85,8 @@ class Sauna:
         sample += '\nplugins:\n'
         plugins_sample = ''
         for p in plugins.get_all_plugins():
-            plugins_sample += textwrap.dedent(p.config_sample())
+            if hasattr(p, 'config_sample'):
+                plugins_sample += textwrap.dedent(p.config_sample())
         sample += plugins_sample.replace('\n', '\n  ')
 
         file_path = os.path.join(path, 'sauna-sample.yml')
@@ -98,11 +103,19 @@ class Sauna:
     def periodicity(self):
         return self.config.get('periodicity', 120)
 
-    def get_checks_name(self):
-        checks = self.get_all_checks()
+    def get_active_checks_name(self):
+        checks = self.get_all_active_checks()
         return [check.name for check in checks]
 
-    def get_all_checks(self):
+    def get_all_available_checks(self):
+        checks = {}
+        for plugin_name, data in plugins.PluginRegister.all_plugins.items():
+            checks[plugin_name] = []
+            for check in data['checks']:
+                checks[plugin_name].append(check)
+        return checks
+
+    def get_all_active_checks(self):
         checks = []
         deps_error = []
         for plugin_name, plugin_data in self.config['plugins'].items():
@@ -134,7 +147,7 @@ class Sauna:
                     plugin_name, check['type']
                 ).lower())
 
-                checks.append(plugins.Check(check_name, check_func, check))
+                checks.append(Check(check_name, check_func, check))
         if deps_error:
             for error in deps_error:
                 print(error)
@@ -142,7 +155,7 @@ class Sauna:
         return checks
 
     def launch_all_checks(self, hostname):
-        for check in self.get_all_checks():
+        for check in self.get_all_active_checks():
 
             try:
                 status, output = check.run_check()
@@ -229,3 +242,25 @@ class Sauna:
             consumer_thread.join()
 
         logging.debug('Exited main thread')
+
+
+def get_all_subclass(main_class):
+    # Check all subclass with recursion
+    subclasses = []
+    for subclass in main_class.__subclasses__():
+        subclasses.append(subclass)
+        subclasses += get_all_subclass(subclass)
+    return tuple(subclasses)
+
+
+def import_submodules(package):
+    if isinstance(package, str):
+        package = importlib.import_module(package)
+
+    for loader, name, is_pkg in pkgutil.walk_packages(package.__path__):
+        if not name.startswith("_") and is_pkg == False:
+            full_name = package.__name__ + '.' + name
+            logging.debug('Importing: {}'.format(full_name))
+            importlib.import_module(full_name)
+
+import_submodules(__name__+'.plugins.contribute')
